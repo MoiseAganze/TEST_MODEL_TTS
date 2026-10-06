@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="fr">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Simba — conversation lingala</title>
+<style>
+  :root { color-scheme: light dark; --fg:#111; --bg:#fafaf8; --mut:#666; --acc:#1b6b4a; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#15171a; --mut:#999; --acc:#4ec08a; } }
+  body { margin:0; padding:24px 16px; font:16px/1.5 system-ui,sans-serif; color:var(--fg);
+         background:var(--bg); max-width:640px; margin-inline:auto; }
+  h1 { font-size:1.3rem; margin:0 0 4px; }
+  p.sub { color:var(--mut); margin:0 0 20px; font-size:.9rem; }
+  button { font:inherit; padding:12px 20px; border:0; border-radius:8px; cursor:pointer;
+           background:var(--acc); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  #state { color:var(--mut); font-size:.9rem; margin:14px 0; }
+  .line { padding:8px 12px; border-radius:8px; margin:6px 0; white-space:pre-wrap; }
+  .you { background:color-mix(in srgb, var(--fg) 8%, transparent); }
+  .bot { background:color-mix(in srgb, var(--acc) 18%, transparent); }
+  .err { color:#c0392b; font-size:.85rem; }
+</style>
+<body>
+<h1>Conversation lingala</h1>
+<p class="sub">Parle, arrête-toi ~0,7 s, la réponse arrive en lingala.</p>
+<button id="go">Démarrer le micro</button>
+<p id="state">micro arrêté</p>
+<div id="log"></div>
+
+<script>
+const SR = 16000;           // identique au serveur, Simba-H et le TTS
+const FRAME = 480;          // 30 ms, la taille de trame que veut webrtcvad
+let ctx, ws, playAt = 0;
+
+const say = (cls, txt) => {
+  const d = document.createElement('div');
+  d.className = 'line ' + cls;
+  d.textContent = txt;
+  log.append(d);
+  d.scrollIntoView({ block: 'nearest' });
+  return d;
+};
+
+// L'AudioWorklet convertit le flux du micro en PCM 16 bits et le poste par
+// trames de 30 ms : 33 messages/s au lieu de 125 avec le bloc natif de 128.
+const WORKLET = `
+class Pump extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Int16Array(${FRAME}); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) {
+      const s = Math.max(-1, Math.min(1, ch[i]));
+      this.buf[this.n++] = s * 32767;
+      if (this.n === ${FRAME}) { this.port.postMessage(this.buf.slice()); this.n = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor('pump', Pump);`;
+
+go.onclick = async () => {
+  go.disabled = true;
+  state.textContent = 'autorisation du micro…';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+    });
+    // sampleRate forcé à 16 kHz : aucun rééchantillonnage, ni ici ni côté serveur.
+    ctx = new AudioContext({ sampleRate: SR });
+    await ctx.audioWorklet.addModule(
+      URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' })));
+
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://')
+                       + location.host + '/ws/conversation');
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { state.textContent = 'connecté — parle en lingala'; };
+    ws.onclose = () => { state.textContent = 'connexion fermée'; go.disabled = false; };
+    ws.onerror = () => say('err', 'erreur WebSocket');
+    ws.onmessage = (e) => {
+      if (typeof e.data !== 'string') return play(e.data);
+      const m = JSON.parse(e.data);
+      if (m.type === 'listening')  state.textContent = 'je réfléchis…';
+      if (m.type === 'transcript') say('you', m.text);
+      if (m.type === 'reply')      say('bot', m.text);
+      if (m.type === 'error')      say('err', m.message);
+      if (m.type === 'turn_end')   state.textContent = `prêt (${m.ms} ms)`;
+    };
+
+    const node = new AudioWorkletNode(ctx, 'pump');
+    node.port.onmessage = (e) => { if (ws.readyState === 1) ws.send(e.data); };
+    // Le worklet n'est alimenté que s'il a un chemin vers la sortie ; un gain à
+    // zéro le branche sans qu'on réentende son propre micro.
+    const mute = new GainNode(ctx, { gain: 0 });
+    ctx.createMediaStreamSource(stream).connect(node).connect(mute).connect(ctx.destination);
+  } catch (err) {
+    say('err', String(err));
+    state.textContent = 'micro refusé (le navigateur exige HTTPS)';
+    go.disabled = false;
+  }
+};
+
+// Lecture en file : chaque phrase est planifiée juste après la précédente, sinon
+// elles se superposent quand le serveur en envoie deux rapprochées.
+function play(arrayBuffer) {
+  const pcm = new Int16Array(arrayBuffer);
+  const buf = ctx.createBuffer(1, pcm.length, SR);
+  const f = buf.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  playAt = Math.max(ctx.currentTime + 0.05, playAt);
+  src.start(playAt);
+  playAt += buf.duration;
+}
+</script>

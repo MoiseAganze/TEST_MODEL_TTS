@@ -1,0 +1,68 @@
+services:
+  simba_tts:
+    build:
+      context: .
+      args:
+        # Préchargés dans l'image (voir le Dockerfile). Compose interpole depuis
+        # le .env du dossier : la même valeur sert au build et à l'exécution, et
+        # un changement de modèle est pris en compte par le rebuild de
+        # deploy.sh. Les valeurs par défaut du Dockerfile s'appliquent si les
+        # variables sont absentes.
+        ASR_MODEL: ${ASR_MODEL-UBC-NLP/Simba-H}
+        TTS_MODEL: ${TTS_MODEL-UBC-NLP/Simba-TTS-lin}
+    image: simba_tts:latest
+    container_name: simba_tts
+    restart: always
+
+    # uvicorn écoute sur 8000 dans le conteneur (voir Dockerfile).
+    # `expose` et non `ports` : rien n'est publié sur l'hôte, seul Traefik
+    # atteint le conteneur, par le réseau partagé.
+    expose:
+      - "8000"
+
+    env_file:
+      - .env
+
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+    labels:
+      - traefik.enable=true
+
+      # -------------------------
+      # Service : port interne
+      # -------------------------
+      - traefik.http.services.simba_tts.loadbalancer.server.port=8000
+
+      # =========================================================
+      # Router HTTP (80) : domaine -> redirige vers HTTPS
+      # =========================================================
+      - traefik.http.routers.simba_tts-http.rule=Host(`simba-tts.chronoconcept.net`)
+      - traefik.http.routers.simba_tts-http.entrypoints=web
+      - traefik.http.routers.simba_tts-http.middlewares=simba-redirect-to-https
+      - traefik.http.routers.simba_tts-http.service=simba_tts
+
+      # Nom préfixé : un middleware « redirect-to-https » existe déjà dans la
+      # stack HYPY. Deux définitions du même nom sur le même Traefik, c'est un
+      # conflit de provider ; celle-ci est à nous.
+      - traefik.http.middlewares.simba-redirect-to-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.simba-redirect-to-https.redirectscheme.permanent=true
+
+      # =========================================================
+      # Router HTTPS (443) - domaine principal -> app
+      # =========================================================
+      # Rien à ajouter pour le WebSocket : Traefik relaie Upgrade/Connection
+      # de lui-même sur le même routeur que le HTTP.
+      - traefik.http.routers.simba_tts-root.rule=Host(`simba-tts.chronoconcept.net`)
+      - traefik.http.routers.simba_tts-root.entrypoints=websecure
+      - traefik.http.routers.simba_tts-root.tls=true
+      - traefik.http.routers.simba_tts-root.tls.certresolver=mytlschallenge
+      - traefik.http.routers.simba_tts-root.service=simba_tts
+
+    networks:
+      - n8n_default
+
+networks:
+  n8n_default:
+    external: true

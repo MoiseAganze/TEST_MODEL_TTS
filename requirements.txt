@@ -1,0 +1,19 @@
+# torch n'est épinglé qu'en +cpu : cette version n'existe que sur l'index
+# PyTorch ci-dessous, donc pip ne peut pas tomber sur la roue PyPI, qui tire
+# 2,5 Go de bibliothèques NVIDIA inutiles sur un VPS sans GPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.9.1+cpu
+
+# 4.x volontairement, pas 5.x : Simba-H et Simba-TTS-lin ont été publiés pour
+# transformers 4.33 / 4.45, et 4.57 est le dernier de la branche.
+transformers==4.57.6
+
+fastapi==0.120.4
+uvicorn[standard]==0.38.0
+httpx==0.28.1
+numpy==2.3.4
+pydantic-settings==2.11.0
+
+# Pas le paquet « webrtcvad » d'origine : il n'est publié qu'en source, donc il
+# faudrait un compilateur C dans l'image. Celui-ci fournit des roues.
+webrtcvad-wheels==2.0.14.post1
